@@ -6,26 +6,25 @@
 
 ```bash
 # Using script (recommended)
-cd workloads
 ./deploy-offline-workloads.sh
 
 # Or complete setup
 ./complete-setup.sh
+```
 
 # Or manually
 oc create namespace offline-workload
-oc apply -f simple-cpu-workload.yaml
-oc apply -f simple-memory-workload.yaml
-oc apply -f file-io-workload.yaml
-oc apply -f network-workload.yaml
-oc apply -f combined-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
+oc apply -f workloads/simple-memory-workload.yaml
+oc apply -f workloads/file-io-workload.yaml
+oc apply -f workloads/network-workload.yaml
+oc apply -f workloads/combined-workload.yaml
 ```
 
 ### 2. Run Workloads
 
 ```bash
 # Using script
-cd workloads
 ./run-workload.sh cpu
 ./run-workload.sh memory
 ./run-workload.sh io
@@ -45,7 +44,6 @@ oc create job --from=cronjob/combined-workload combined-test-$(date +%s) -n offl
 
 ```bash
 # Using script
-cd workloads
 ./status.sh
 
 # Using CLI
@@ -89,7 +87,7 @@ watch -n 2 'oc top pods -n offline-workload'
 **Quick Method - Edit YAML:**
 ```bash
 # Edit the YAML file
-vim simple-cpu-workload.yaml
+vim workloads/simple-cpu-workload.yaml
 
 # Find resources section and modify:
 # resources:
@@ -101,7 +99,7 @@ vim simple-cpu-workload.yaml
 #     memory: "128Mi" # Change this
 
 # Apply changes
-oc apply -f simple-cpu-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
 ```
 
 **Using oc patch:**
@@ -144,8 +142,8 @@ oc delete job <job-name> -n offline-workload
 
 ```bash
 # Using script
-cd workloads
 ./cleanup.sh
+```
 
 # Using CLI
 oc delete cronjobs --all -n offline-workload

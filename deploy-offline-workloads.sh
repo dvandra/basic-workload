@@ -40,9 +40,9 @@ echo ""
 
 # Deploy all workloads
 for file in simple-cpu-workload.yaml simple-memory-workload.yaml file-io-workload.yaml network-workload.yaml combined-workload.yaml; do
-    if [ -f "$SCRIPT_DIR/$file" ]; then
+    if [ -f "$SCRIPT_DIR/workloads/$file" ]; then
         echo "Deploying $file..."
-        oc apply -f "$SCRIPT_DIR/$file"
+        oc apply -f "$SCRIPT_DIR/workloads/$file"
     fi
 done
 

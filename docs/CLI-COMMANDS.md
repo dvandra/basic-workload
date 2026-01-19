@@ -21,18 +21,14 @@ oc config current-context
 
 **Example:**
 ```bash
-oc login https://api.example.openshift.com:6443 -u admin -p password
+oc login https://api.example.openshift.com:6443 -u admin -p <your-password>
 oc whoami
 # Output: admin
 ```
 
-### Step 2: Navigate to Workloads Directory
+### Step 2: Deploy Workloads
 
-```bash
-cd workloads
-```
-
-### Step 3: Deploy Workloads
+**Note**: Run all commands from the workloads repository directory.
 
 **Option A: Using the complete setup script (recommended)**
 ```bash
@@ -46,11 +42,11 @@ chmod +x complete-setup.sh
 oc create namespace offline-workload
 
 # Deploy all CronJobs
-oc apply -f simple-cpu-workload.yaml
-oc apply -f simple-memory-workload.yaml
-oc apply -f file-io-workload.yaml
-oc apply -f network-workload.yaml
-oc apply -f combined-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
+oc apply -f workloads/simple-memory-workload.yaml
+oc apply -f workloads/file-io-workload.yaml
+oc apply -f workloads/network-workload.yaml
+oc apply -f workloads/combined-workload.yaml
 
 # Verify deployment
 oc get cronjobs -n offline-workload
@@ -149,9 +145,7 @@ oc delete namespace offline-workload
 
 ### Complete Setup and Run
 ```bash
-cd workloads && \
-./complete-setup.sh && \
-./run-workload.sh all
+./complete-setup.sh && ./run-workload.sh all
 ```
 
 ### Check Everything
@@ -175,10 +169,7 @@ oc top pods -n offline-workload && oc top nodes
 # 1. Login
 oc login https://api.example.openshift.com:6443 -u admin
 
-# 2. Navigate
-cd workloads
-
-# 3. Setup
+# 2. Setup (from workloads directory)
 ./complete-setup.sh
 
 # 4. Run workloads
