@@ -59,8 +59,8 @@ echo ""
 # Step 4: Deploy CronJobs
 echo "Step 4: Deploying CronJobs..."
 for file in simple-cpu-workload.yaml simple-memory-workload.yaml file-io-workload.yaml network-workload.yaml combined-workload.yaml; do
-    if [ -f "$SCRIPT_DIR/$file" ]; then
-        oc apply -f "$SCRIPT_DIR/$file" > /dev/null
+    if [ -f "$SCRIPT_DIR/workloads/$file" ]; then
+        oc apply -f "$SCRIPT_DIR/workloads/$file" > /dev/null
         echo "  ✅ Deployed $file"
     fi
 done

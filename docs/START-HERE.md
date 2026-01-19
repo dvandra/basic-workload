@@ -21,13 +21,9 @@ oc login <your-openshift-api-url> -u <username> -p <password>
 oc whoami
 ```
 
-### Step 2: Navigate to Workloads Directory
+### Step 2: Run Complete Setup
 
-```bash
-cd workloads
-```
-
-### Step 3: Run Complete Setup
+**Note**: Run all commands from the workloads repository directory.
 
 ```bash
 chmod +x complete-setup.sh
@@ -72,23 +68,23 @@ oc logs -f -n offline-workload -l app=simple-cpu
 
 This directory contains 5 offline workloads:
 
-1. **Simple CPU Workload** (`simple-cpu-workload.yaml`)
+1. **Simple CPU Workload** (`workloads/simple-cpu-workload.yaml`)
    - CPU-intensive stress test
    - Resources: CPU 100m-500m, Memory 64Mi-128Mi
 
-2. **Simple Memory Workload** (`simple-memory-workload.yaml`)
+2. **Simple Memory Workload** (`workloads/simple-memory-workload.yaml`)
    - Memory-intensive stress test
    - Resources: CPU 50m-200m, Memory 128Mi-512Mi
 
-3. **File I/O Workload** (`file-io-workload.yaml`)
+3. **File I/O Workload** (`workloads/file-io-workload.yaml`)
    - File I/O operations
    - Resources: CPU 50m-200m, Memory 64Mi-128Mi
 
-4. **Network Workload** (`network-workload.yaml`)
+4. **Network Workload** (`workloads/network-workload.yaml`)
    - Network traffic generation
    - Resources: CPU 50m-200m, Memory 64Mi-128Mi
 
-5. **Combined Workload** (`combined-workload.yaml`)
+5. **Combined Workload** (`workloads/combined-workload.yaml`)
    - Combined CPU, memory, and I/O
    - Resources: CPU 100m-500m, Memory 128Mi-512Mi
 
@@ -99,15 +95,15 @@ This directory contains 5 offline workloads:
 ```bash
 # Example: Deploy CPU workload
 oc create namespace offline-workload
-oc apply -f simple-cpu-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
 ```
 
 ### Modify CPU and Memory
 
-1. Edit the YAML file (e.g., `simple-cpu-workload.yaml`)
+1. Edit the YAML file (e.g., `workloads/simple-cpu-workload.yaml`)
 2. Find the `resources` section
 3. Modify CPU/memory values
-4. Apply: `oc apply -f simple-cpu-workload.yaml`
+4. Apply: `oc apply -f workloads/simple-cpu-workload.yaml`
 
 For detailed instructions, see **README.md** section "Modify CPU and Memory Values".
 
@@ -137,18 +133,17 @@ If you prefer to run commands manually, see:
 - `run-workload.sh` - Run workloads manually
 - `status.sh` - Check status
 - `cleanup.sh` - Clean up resources
-- `CLI-COMMANDS.md` - Complete CLI commands reference
-- `README.md` - Full documentation
-- `QUICK-REFERENCE.md` - Quick command reference
-- `START-HERE.md` (this file) - Quick start guide
-- `*.yaml` - Workload CronJob definitions
+- `docs/CLI-COMMANDS.md` - Complete CLI commands reference
+- `docs/README.md` - Full documentation
+- `docs/QUICK-REFERENCE.md` - Quick command reference
+- `docs/START-HERE.md` (this file) - Quick start guide
+- `workloads/*.yaml` - Workload CronJob definitions
 
 ## 🎯 Quick Workflow
 
 ```bash
-# Complete workflow
+# Complete workflow (run from workloads directory)
 oc login <api-url> -u <user> -p <pass>
-cd workloads
 ./complete-setup.sh
 ./run-workload.sh all
 ./status.sh

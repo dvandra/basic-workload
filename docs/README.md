@@ -12,27 +12,27 @@ These workloads run entirely within your OpenShift cluster with **no external de
 
 ## Available Workloads
 
-1. **Simple CPU Workload** (`simple-cpu-workload.yaml`)
+1. **Simple CPU Workload** (`workloads/simple-cpu-workload.yaml`)
    - CPU-intensive loops
    - Resources: CPU 100m-500m, Memory 64Mi-128Mi
    - Duration: 15 minutes
 
-2. **Simple Memory Workload** (`simple-memory-workload.yaml`)
+2. **Simple Memory Workload** (`workloads/simple-memory-workload.yaml`)
    - Memory allocation and usage
    - Resources: CPU 50m-200m, Memory 128Mi-512Mi
    - Duration: 15 minutes
 
-3. **File I/O Workload** (`file-io-workload.yaml`)
+3. **File I/O Workload** (`workloads/file-io-workload.yaml`)
    - File read/write operations
    - Resources: CPU 50m-200m, Memory 64Mi-128Mi
    - Duration: 15 minutes
 
-4. **Network Workload** (`network-workload.yaml`)
+4. **Network Workload** (`workloads/network-workload.yaml`)
    - Local network connections
    - Resources: CPU 50m-200m, Memory 64Mi-128Mi
    - Duration: 15 minutes
 
-5. **Combined Workload** (`combined-workload.yaml`)
+5. **Combined Workload** (`workloads/combined-workload.yaml`)
    - CPU, memory, and I/O simultaneously
    - Resources: CPU 100m-500m, Memory 128Mi-512Mi
    - Duration: 15 minutes
@@ -42,10 +42,11 @@ These workloads run entirely within your OpenShift cluster with **no external de
 ### Option 1: Complete Setup Script (Recommended)
 
 ```bash
-cd workloads
 chmod +x complete-setup.sh
 ./complete-setup.sh
 ```
+
+**Note**: Run all commands from the workloads repository directory.
 
 This script will:
 - ✅ Check if you're logged in to OpenShift
@@ -56,7 +57,6 @@ This script will:
 ### Option 2: Deploy All Workloads
 
 ```bash
-cd workloads
 ./deploy-offline-workloads.sh
 ```
 
@@ -67,19 +67,19 @@ cd workloads
 oc create namespace offline-workload
 
 # Deploy CPU workload
-oc apply -f simple-cpu-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
 
 # Deploy Memory workload
-oc apply -f simple-memory-workload.yaml
+oc apply -f workloads/simple-memory-workload.yaml
 
 # Deploy File I/O workload
-oc apply -f file-io-workload.yaml
+oc apply -f workloads/file-io-workload.yaml
 
 # Deploy Network workload
-oc apply -f network-workload.yaml
+oc apply -f workloads/network-workload.yaml
 
 # Deploy Combined workload
-oc apply -f combined-workload.yaml
+oc apply -f workloads/combined-workload.yaml
 ```
 
 ## Run Workloads
@@ -87,10 +87,9 @@ oc apply -f combined-workload.yaml
 ### Using Scripts
 
 ```bash
-cd workloads
-
 # Run all workloads
 ./run-workload.sh all
+```
 
 # Run specific workload
 ./run-workload.sh cpu
@@ -124,7 +123,6 @@ oc create job --from=cronjob/combined-workload combined-test-$(date +%s) -n offl
 ### Using Scripts
 
 ```bash
-cd workloads
 ./status.sh
 ```
 
@@ -151,7 +149,7 @@ oc logs -f -n offline-workload -l app=simple-cpu
 
 ### Method 1: Edit YAML Files (Recommended)
 
-1. Open the workload YAML file (e.g., `simple-cpu-workload.yaml`)
+1. Open the workload YAML file (e.g., `workloads/simple-cpu-workload.yaml`)
 2. Locate the `resources` section:
 
 ```yaml
@@ -171,7 +169,7 @@ resources:
 4. Apply the changes:
 
 ```bash
-oc apply -f simple-cpu-workload.yaml
+oc apply -f workloads/simple-cpu-workload.yaml
 ```
 
 ### Method 2: Use `oc patch` Command
@@ -274,7 +272,6 @@ oc delete job <job-name> -n offline-workload
 ### Clean Up Everything
 
 ```bash
-cd workloads
 ./cleanup.sh
 
 # Or manually
@@ -357,7 +354,7 @@ This directory contains:
 - **run-workload.sh** - Run workloads script
 - **status.sh** - Check status script
 - **cleanup.sh** - Clean up script
-- **\*.yaml** - Workload CronJob definitions
+- **workloads/\*.yaml** - Workload CronJob definitions
 
 ## Troubleshooting
 
