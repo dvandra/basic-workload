@@ -2,6 +2,86 @@
 
 ## 📋 Step-by-Step CLI Commands
 
+### Step 0: Install virtctl (Optional but Recommended)
+
+`virtctl` is the CLI tool for managing OpenShift Virtualization VMs. It's recommended for running VM stress tests.
+
+#### Method 1: Download Binary (Linux/macOS/Windows)
+
+```bash
+# Get the latest stable version
+export VERSION=$(curl -s https://storage.googleapis.com/kubevirt-prow/release/kubevirt/kubevirt/stable.txt)
+
+# Detect your architecture
+ARCH="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/')"
+
+# Download virtctl binary
+curl -L -o virtctl "https://github.com/kubevirt/kubevirt/releases/download/${VERSION}/virtctl-${VERSION}-${ARCH}"
+
+# Make it executable
+chmod +x virtctl
+
+# Move to PATH (Linux/macOS)
+sudo mv virtctl /usr/local/bin/
+
+# Verify installation
+virtctl version
+```
+
+**For Windows (PowerShell):**
+```powershell
+# Get version
+$VERSION = (Invoke-WebRequest -Uri "https://storage.googleapis.com/kubevirt-prow/release/kubevirt/kubevirt/stable.txt" -UseBasicParsing).Content.Trim()
+
+# Download (adjust ARCH for your system: windows-amd64)
+Invoke-WebRequest -Uri "https://github.com/kubevirt/kubevirt/releases/download/$VERSION/virtctl-$VERSION-windows-amd64.exe" -OutFile "virtctl.exe"
+
+# Add to PATH or use directly
+.\virtctl.exe version
+```
+
+#### Method 2: Homebrew (macOS/Linux)
+
+```bash
+# Install via Homebrew
+brew install virtctl
+
+# Verify installation
+virtctl version
+```
+
+#### Method 3: kubectl Plugin (via krew)
+
+If you have `kubectl` and `krew` installed:
+
+```bash
+# Install virt plugin
+kubectl krew install virt
+
+# Use as kubectl plugin
+kubectl virt version
+kubectl virt console <vm-name> -n <namespace>
+```
+
+**Note:** With krew, use `kubectl virt` instead of `virtctl`.
+
+#### Verify Installation
+
+```bash
+# Check if virtctl is installed
+virtctl version
+
+# Or if using krew plugin
+kubectl virt version
+```
+
+**Example Output:**
+```
+Client Version: version.Info{Major:"1", Minor:"0", GitVersion:"v1.0.0", ...}
+```
+
+---
+
 ### Step 1: Login to OpenShift Cluster
 
 ```bash
