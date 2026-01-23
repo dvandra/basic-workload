@@ -7,7 +7,7 @@ metadata:
     app: combined
     workload-type: combined
 spec:
-  schedule: "0 */2 * * *"
+  schedule: "*/5 * * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
   concurrencyPolicy: Forbid

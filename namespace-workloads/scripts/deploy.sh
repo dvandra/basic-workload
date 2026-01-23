@@ -1,15 +1,21 @@
 #!/bin/bash
 
-# Complete setup script for offline workloads
-# This script handles everything from login to running workloads
+# Deploy namespace workloads (CronJobs)
+# Creates namespace and deploys CPU, memory, I/O, and network workloads
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="offline-workload"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Source configuration if available, otherwise use defaults
+if [[ -f "$ROOT_DIR/config.sh" ]]; then
+    source "$ROOT_DIR/config.sh"
+fi
+NAMESPACE="${NAMESPACE_WORKLOAD_NS:-offline-workload}"
 
 echo "=========================================="
-echo "Complete Offline Workloads Setup"
+echo "Deploy Namespace Workloads"
 echo "=========================================="
 echo ""
 
@@ -58,9 +64,11 @@ echo ""
 
 # Step 4: Deploy CronJobs
 echo "Step 4: Deploying CronJobs..."
+WORKLOADS_DIR="$SCRIPT_DIR/../workloads"
 for file in simple-cpu-workload.yaml simple-memory-workload.yaml file-io-workload.yaml network-workload.yaml combined-workload.yaml; do
-    if [ -f "$SCRIPT_DIR/workloads/$file" ]; then
-        oc apply -f "$SCRIPT_DIR/workloads/$file" > /dev/null
+    if [ -f "$WORKLOADS_DIR/$file" ]; then
+        # Replace namespace in YAML and apply
+        sed "s/namespace: offline-workload/namespace: $NAMESPACE/g" "$WORKLOADS_DIR/$file" | oc apply -f - > /dev/null
         echo "  ✅ Deployed $file"
     fi
 done
@@ -68,17 +76,17 @@ echo ""
 
 # Step 5: Verify deployment
 echo "Step 5: Verifying deployment..."
-CronJob_COUNT=$(oc get cronjobs -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-if [ "$CronJob_COUNT" -ge 5 ]; then
-    echo "✅ All CronJobs deployed successfully ($CronJob_COUNT CronJobs)"
+CRONJOB_COUNT=$(oc get cronjobs -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [ "$CRONJOB_COUNT" -ge 5 ]; then
+    echo "✅ All CronJobs deployed successfully ($CRONJOB_COUNT CronJobs)"
 else
-    echo "⚠️  Warning: Expected 5 CronJobs, found $CronJob_COUNT"
+    echo "⚠️  Warning: Expected 5 CronJobs, found $CRONJOB_COUNT"
 fi
 echo ""
 
 # Step 6: Summary
 echo "=========================================="
-echo "Setup Complete!"
+echo "Deployment Complete!"
 echo "=========================================="
 echo ""
 echo "Namespace: $NAMESPACE"
@@ -86,7 +94,8 @@ echo "CronJobs deployed:"
 oc get cronjobs -n "$NAMESPACE" --no-headers | awk '{print "  - " $1}'
 echo ""
 echo "Next steps:"
-echo "  1. Run workloads: ./run-workload.sh all"
-echo "  2. Check status: ./status.sh"
-echo "  3. View logs: oc logs -f -n $NAMESPACE -l app=simple-cpu"
+echo "  1. Wait 15-20 minutes for metrics to be collected"
+echo "  2. Check metrics from project root:"
+echo "     ./namespace-workloads/scripts/check-metrics.sh"
+echo "     Or use ./run-all.sh which handles everything"
 echo ""
