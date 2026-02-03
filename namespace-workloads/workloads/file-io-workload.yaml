@@ -1,13 +1,13 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: network-workload
+  name: file-io-workload
   namespace: offline-workload
   labels:
-    app: network
-    workload-type: network
+    app: file-io
+    workload-type: io
 spec:
-  schedule: "0 */2 * * *"
+  schedule: "*/5 * * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
   concurrencyPolicy: Forbid
@@ -16,11 +16,11 @@ spec:
       template:
         metadata:
           labels:
-            app: network
+            app: file-io
         spec:
           restartPolicy: OnFailure
           containers:
-          - name: network-worker
+          - name: io-worker
             image: busybox:latest
             imagePullPolicy: IfNotPresent
             resources:
@@ -34,17 +34,16 @@ spec:
             - /bin/sh
             - -c
             - |
-              echo "Starting network workload at $(date)"
-              # Generate network traffic using localhost connections
+              echo "Starting file I/O workload at $(date)"
+              # Generate file I/O operations for 15 minutes
               timeout 900 sh -c 'while true; do
-                # Create TCP connections to localhost
-                nc -l -p 8080 &
-                NC_PID=$!
-                sleep 0.1
-                echo "test" | nc localhost 8080 2>/dev/null || true
-                kill $NC_PID 2>/dev/null || true
-                # UDP operations
-                echo "test" | nc -u localhost 8081 2>/dev/null || true
+                # Write operations
+                dd if=/dev/urandom of=/tmp/testfile bs=1M count=2 2>/dev/null
+                # Read operations
+                cat /tmp/testfile > /dev/null 2>&1
+                # Copy operations
+                cp /tmp/testfile /tmp/testfile2 2>/dev/null
+                rm -f /tmp/testfile /tmp/testfile2 2>/dev/null
                 sleep 1
               done' || true
-              echo "Network workload completed at $(date)"
+              echo "File I/O workload completed at $(date)"

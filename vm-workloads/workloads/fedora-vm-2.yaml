@@ -1,19 +1,19 @@
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: fedora-vm-1
+  name: fedora-vm-2
   namespace: auto-vm-test
   labels:
-    app: fedora-vm-1
+    app: fedora-vm-2
     type: fedora
-    vm-type: stress-test
+    vm-type: test
 spec:
   running: true
   template:
     metadata:
       labels:
-        kubevirt.io/vm: fedora-vm-1
-        app: fedora-vm-1
+        kubevirt.io/vm: fedora-vm-2
+        app: fedora-vm-2
         type: fedora
     spec:
       domain:
@@ -52,9 +52,8 @@ spec:
               chpasswd: { expire: False }
               ssh_pwauth: true
               ssh_authorized_keys:
-                - "YOUR_SSH_PUBLIC_KEY_HERE"
+                - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDnJ9fhR5Lz8VJUXFZtdO2yuNX5WtrjZO7zHgbC9mk6estk+CfRpVIfIBTi0wg6aqzYuTQWk41u8eSY0gb7tjLzsgL1yqNBFDHAG4rD+idbh/mUnRstltIg/MJ2PqPNDrNNVrsZWtDWodaG1sQJac+XKgCJ4vTTp310IukttzCcuyceGvdv4PcbqiuyZjMVHPC+0PMBHxpSjWTmQ1YUzhAv2X+SYGUg/CcnmUlIUapmZ7zBzYhoFaD5knztFA3Meb+88+bCH7e3wgbC3oBYOH6KUSmemNZAoFPvv/ovfkAXR5wvfwy8jkaQPpzoTQ4ETC515Eno2JbEXtET+9srmgX2HmaFyiv0Uuq4kZAL3IFHN7KUgd3ofH5/NGGFAegRyZSmZxj/4AUTkzdKJ/vKiB+tWoE6VYZsIozZqPKf7xalkF6PRvwtbu72nrXPkRM+Qi9IH7XUsWE0QUW3SKkz/ceBzf0I1lB9jn9zjlMu460MH7p8bHS81+OM/KrTt0Q14Wl0LgBUtCCPavXAc267cPZ+7iWWUj5kt5Nlsx759lSdtEqS+XVAvvP9wK85w9St83rRmODNiXomfe80aHZRbL+0XKNLDFF3XnA0pzI8kwWDQ8S46uP4PDeqq/1HpV2rv6Zl3ex6Ir6xbAPoFAhd5Jgw1SkkgjmmYZMTohgUvUlp4w== rzalavad.com"
               packages:
-                - stress-ng
                 - openssh-server
               runcmd:
                 - mkdir -p /var/run/sshd
@@ -62,18 +61,4 @@ spec:
                 - nohup /usr/sbin/sshd > /dev/null 2>&1 &
                 - sleep 3
                 - pgrep -f "/usr/sbin/sshd" && echo "sshd started successfully" || echo "sshd may not be running"
-                - echo "VM Ready for Stress Test" > /etc/vm_status
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: fedora-vm-1-ssh-service
-  namespace: auto-vm-test
-spec:
-  selector:
-    app: fedora-vm-1
-  ports:
-    - protocol: TCP
-      port: 2200
-      targetPort: 22
-  type: NodePort
+                - echo "VM Ready" > /etc/vm_status
