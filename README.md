@@ -194,9 +194,8 @@ oc config use-context $VM_SPOKE_CONTEXT_NAME
 
 # Wait 15-20 minutes for metrics to be collected...
 
-# Check metrics (automatically switches to Hub context)
-./namespace-workloads/scripts/check-metrics.sh
-./vm-workloads/scripts/check-metrics.sh
+# Check metrics over last 5 days (range + instant queries)
+./namespace-workloads/scripts/check-thanos-metrics-5days.sh
 
 # Cleanup (deletes workloads AND namespaces by default)
 ./cleanup.sh
@@ -213,8 +212,7 @@ oc config use-context $VM_SPOKE_CONTEXT_NAME
 |--------|--------------|
 | Deploy namespace workloads | `namespace-spoke` |
 | Deploy VM workloads | `vm-spoke` |
-| Check namespace metrics | `hub` (Thanos) |
-| Check VM metrics | `hub` (Thanos) |
+| Check Thanos metrics (last 5 days) | `hub` (Thanos) |
 
 ## Project Structure
 
@@ -236,7 +234,8 @@ basic-workload/
 │   │   └── combined-workload.yaml      #   Combined workload
 │   └── scripts/
 │       ├── deploy.sh                   # Deploy CronJob workloads to spoke
-│       └── check-metrics.sh            # Query acm_rs:namespace:* from Hub Thanos
+│       ├── check-metrics.sh            # Query acm_rs:namespace:* from Hub Thanos
+│       └── check-thanos-metrics-5days.sh # 5-day range + instant Thanos queries
 │
 ├── vm-workloads/                       # ── VM Workloads ──
 │   ├── workloads/                      # VM YAML definitions
