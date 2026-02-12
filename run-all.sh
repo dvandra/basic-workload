@@ -142,6 +142,7 @@ print_step "Checking script permissions..."
 SCRIPTS_TO_CHECK=(
     "$SCRIPT_DIR/namespace-workloads/scripts/deploy.sh"
     "$SCRIPT_DIR/namespace-workloads/scripts/check-metrics.sh"
+    "$SCRIPT_DIR/namespace-workloads/scripts/check-thanos-metrics-5days.sh"
     "$SCRIPT_DIR/vm-workloads/scripts/deploy.sh"
     "$SCRIPT_DIR/vm-workloads/scripts/check-metrics.sh"
     "$SCRIPT_DIR/cleanup.sh"
@@ -339,26 +340,12 @@ else
 fi
 
 # =============================================================================
-# Step 7: Check Namespace Metrics (from Hub cluster)
+# Step 4: Check Thanos Metrics (Last 5 Days)
 # =============================================================================
-if [[ "$SKIP_NAMESPACE" != "true" ]]; then
-    print_header "Step 4: Checking Namespace Workload Metrics"
-    
-    print_info "Metrics are queried from Hub cluster (where Thanos runs)"
-    print_step "Running namespace-workloads/scripts/check-metrics.sh..."
-    "$SCRIPT_DIR/namespace-workloads/scripts/check-metrics.sh" || true
-fi
-
-# =============================================================================
-# Step 8: Check VM Metrics (from Hub cluster)
-# =============================================================================
-if [[ "$SKIP_VM" != "true" ]]; then
-    print_header "Step 5: Checking VM Workload Metrics"
-    
-    print_info "Metrics are queried from Hub cluster (where Thanos runs)"
-    print_step "Running vm-workloads/scripts/check-metrics.sh..."
-    "$SCRIPT_DIR/vm-workloads/scripts/check-metrics.sh" || true
-fi
+print_header "Step 4: Checking Thanos Metrics (Last 5 Days)"
+print_info "Metrics are queried from Hub cluster (where Thanos runs)"
+print_step "Running namespace-workloads/scripts/check-thanos-metrics-5days.sh..."
+"$SCRIPT_DIR/namespace-workloads/scripts/check-thanos-metrics-5days.sh" || true
 
 # =============================================================================
 # Step 9: Cleanup Prompt
