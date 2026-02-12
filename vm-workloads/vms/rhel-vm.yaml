@@ -52,7 +52,7 @@ spec:
               chpasswd: { expire: False }
               ssh_pwauth: true
               ssh_authorized_keys:
-                - "YOUR_SSH_PUBLIC_KEY_HERE"
+                - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDAA3ktFqY3mqbILP3ERs9GTGtziNvdLFMHTUhUOfpGIW8AGPjxVo5iEYiIkHGLuqsiI5flxi81+0ubKRyeb/KWkhVjEGCX5a44CqBrDQOnfR4gWStmuGcvu505hzLJI4x/SHlcMpYY78WTbLuHAX+rcOR/emuwMm2pRx3JG9TuFT8105CDoeqqsR4z7dIZV4tFD8IDASlGFRelkUTj7Ot5psnsdw/VyLNty3Z6xHMRzZ5BxwVCmIFEVlnScN1+S8Y3QUJlFWq5viJJU2rlngq934/X08t//b6AuO9RLbtOFhTqse2fuhyHBBa0HqlLv+aZnys61V/l+0nFyJyX+9dGMAfJLBeTfKHw0nVyZ6M+pVv7Q/1/Hqly+/HSuE2nFV+P27c2J+OHYK2LmGBvFrRjfyaJ86bnsMsvSiaNZwAElkeJjFW+ziYpLwRUAlzKUBXjREYGyfeEmA3AbRdVNyo+k85d6F/+2Bfi5QSdKo8naVP/FUibT0bPNX3P264AsKk= dvandra-mac"
               packages:
                 - stress-ng
                 - openssh-server

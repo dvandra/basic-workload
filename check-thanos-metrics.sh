@@ -1,9 +1,12 @@
 #!/bin/bash
 
-# Script to check existing workloads and query Thanos for metrics
-# Assumes workloads are already deployed and triggered
+# Script to query Thanos for metrics via Prometheus rules
+# Queries Thanos querier directly without namespace filtering
 #
-# Queries 6 metrics for the namespace:
+# Usage: ./check-thanos-metrics.sh
+#
+# Queries 12 metrics from Thanos:
+# Regular Metrics (6):
 # CPU Metrics:
 #   - acm_rs:namespace:cpu_request
 #   - acm_rs:namespace:cpu_usage
@@ -12,14 +15,22 @@
 #   - acm_rs:namespace:memory_request
 #   - acm_rs:namespace:memory_usage
 #   - acm_rs:namespace:memory_recommendation
+# VM Metrics (6):
+# CPU Metrics:
+#   - acm_rs_vm:namespace:cpu_request
+#   - acm_rs_vm:namespace:cpu_usage
+#   - acm_rs_vm:namespace:cpu_recommendation
+# Memory Metrics:
+#   - acm_rs_vm:namespace:memory_request
+#   - acm_rs_vm:namespace:memory_usage
+#   - acm_rs_vm:namespace:memory_recommendation
 #
-# Time Range: Last 4 hours (14400 seconds)
+# Time Range: Last 12 hours (43200 seconds)
 # Query Interval: 5 minutes (300 seconds)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="offline-workload"
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,11 +42,11 @@ NC='\033[0m' # No Color
 echo "=========================================="
 echo "Thanos Metrics Check Script"
 echo "=========================================="
-echo "Namespace: $NAMESPACE"
-echo "Time Range: Last 4 hours"
+echo "Querying Thanos querier for metrics (no namespace filter)"
+echo "Time Range: Last 12 hours"
 echo ""
-echo "Note: This script queries metrics that may take time to appear."
-echo "If metrics show 'N/A', workloads may need more time to generate data."
+echo "Note: This script queries metrics directly from Thanos."
+echo "If metrics show 'N/A', metrics may not be available yet."
 echo ""
 
 # Check if oc is installed
@@ -56,7 +67,22 @@ echo ""
 
 # Function to get Thanos query endpoint
 get_thanos_endpoint() {
-    # Try to find Thanos Query route (always HTTPS)
+    # Try to find Thanos Query Frontend route first (preferred)
+    local route=$(oc get route -n open-cluster-management-observability observability-thanos-query-frontend -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    
+    if [ -n "$route" ]; then
+        # Check if route has TLS
+        local tls=$(oc get route -n open-cluster-management-observability observability-thanos-query-frontend -o jsonpath='{.spec.tls}' 2>/dev/null || echo "")
+        if [ -n "$tls" ] && [ "$tls" != "null" ]; then
+            echo "https://${route}"
+            return 0
+        else
+            echo "http://${route}"
+            return 0
+        fi
+    fi
+    
+    # Try to find Thanos Query route (fallback)
     local route=$(oc get route -n openshift-monitoring thanos-querier -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
     
     # If route found, use HTTPS
@@ -115,10 +141,11 @@ cleanup_port_forward() {
 # Function to query Thanos for current value
 get_current_metric() {
     local metric=$1
-    local namespace=$2
-    local endpoint=$3
+    local endpoint=$2
+    local prefix=${3:-"acm_rs:namespace:"}  # Default to acm_rs:namespace:, can be overridden
     
-    local query="acm_rs:namespace:${metric}{namespace=\"${namespace}\"}"
+    # Query without namespace filter - query all metrics
+    local query="${prefix}${metric}"
     local token=$(oc whoami -t 2>/dev/null)
     
     if [ -z "$token" ]; then
@@ -129,8 +156,8 @@ get_current_metric() {
     # Add timeout and connection timeout to prevent hanging
     # Use -k to ignore SSL certificate errors for HTTPS
     # Use --max-time instead of timeout command (more portable)
-    # Use --fail to fail on HTTP errors
-    local response=$(curl -s -k --connect-timeout 10 --max-time 30 --fail -G \
+    # Don't use --fail so we can check the response even on HTTP errors
+    local response=$(curl -s -k --connect-timeout 10 --max-time 30 -G \
         --data-urlencode "query=${query}" \
         -H "Authorization: Bearer ${token}" \
         "${endpoint}/api/v1/query" 2>&1)
@@ -148,7 +175,7 @@ get_current_metric() {
         # If endpoint was HTTP, try HTTPS instead
         if [[ "$endpoint" == http://* ]]; then
             endpoint="${endpoint/http:/https:}"
-            response=$(curl -s -k --connect-timeout 10 --max-time 30 --fail -G \
+            response=$(curl -s -k --connect-timeout 10 --max-time 30 -G \
                 --data-urlencode "query=${query}" \
                 -H "Authorization: Bearer ${token}" \
                 "${endpoint}/api/v1/query" 2>&1)
@@ -172,23 +199,70 @@ get_current_metric() {
         return 1
     fi
     
-    if [ $curl_exit -eq 0 ] && [ -n "$response" ]; then
-        # Extract value using jq if available
+    # Check if we got a valid response
+    if [ -z "$response" ]; then
+        echo "Error: Empty response"
+        return 1
+    fi
+    
+    # Check if response is valid JSON with status
+    if ! echo "$response" | grep -q '"status"'; then
+        # Not JSON, might be an error message
+        if echo "$response" | grep -qi "error\|failed\|refused"; then
+            echo "Error: $(echo "$response" | head -1)"
+        else
+            echo "Error: Invalid response format"
+        fi
+        return 1
+    fi
+    
+    # Check if query was successful
+    if ! echo "$response" | grep -q '"status":"success"'; then
+        # Query failed, try to extract error message
         if command -v jq &> /dev/null; then
-            local value=$(echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null)
-            if [ -n "$value" ] && [ "$value" != "null" ] && [ "$value" != "empty" ]; then
+            local error_msg=$(echo "$response" | jq -r '.error // .errorType // "Query failed"' 2>/dev/null)
+            echo "Error: $error_msg"
+        else
+            echo "Error: Query failed"
+        fi
+        return 1
+    fi
+    
+    # Extract value using jq if available
+    if command -v jq &> /dev/null; then
+        # Check if we have any results
+        local result_count=$(echo "$response" | jq -r '.data.result | length' 2>/dev/null || echo "0")
+        
+        if [ "$result_count" -eq 0 ] || [ "$result_count" == "null" ]; then
+            echo "N/A"
+            return 1
+        fi
+        
+        # If multiple results, sum them (for metrics across namespaces)
+        if [ "$result_count" -gt 1 ]; then
+            # Sum all values from multiple results
+            local value=$(echo "$response" | jq -r '[.data.result[].value[1] | tonumber? // 0] | add' 2>/dev/null)
+            if [ -n "$value" ] && [ "$value" != "null" ] && [ "$value" != "" ]; then
                 echo "$value"
                 return 0
             fi
         else
-            # Fallback: try to extract value without jq
-            local value=$(echo "$response" | grep -o '"value":\["[^"]*","[^"]*"\]' | sed 's/.*","\([^"]*\)".*/\1/' | head -1)
-            if [ -n "$value" ] && [ "$value" != "null" ]; then
+            # Single result
+            local value=$(echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null)
+            if [ -n "$value" ] && [ "$value" != "null" ] && [ "$value" != "empty" ] && [ "$value" != "" ]; then
                 echo "$value"
                 return 0
             fi
         fi
+    else
+        # Fallback: try to extract value without jq
+        local value=$(echo "$response" | grep -o '"value":\["[^"]*","[^"]*"\]' | sed 's/.*","\([^"]*\)".*/\1/' | head -1)
+        if [ -n "$value" ] && [ "$value" != "null" ]; then
+            echo "$value"
+            return 0
+        fi
     fi
+    
     echo "N/A"
     return 1
 }
@@ -196,12 +270,13 @@ get_current_metric() {
 # Function to query Thanos for time series
 query_time_series() {
     local metric=$1
-    local namespace=$2
-    local endpoint=$3
-    local start_time=$4
-    local end_time=$5
+    local endpoint=$2
+    local start_time=$3
+    local end_time=$4
+    local prefix=${5:-"acm_rs:namespace:"}  # Default to acm_rs:namespace:, can be overridden
     
-    local query="acm_rs:namespace:${metric}{namespace=\"${namespace}\"}"
+    # Query without namespace filter - query all metrics
+    local query="${prefix}${metric}"
     local token=$(oc whoami -t)
     
     # Add timeout and connection timeout to prevent hanging
@@ -296,62 +371,8 @@ format_cpu() {
     fi
 }
 
-# Step 1: Check if namespace exists
-echo -e "${BLUE}Step 1: Checking if namespace exists...${NC}"
-if oc get namespace "$NAMESPACE" &> /dev/null; then
-    echo -e "${GREEN}✓ Namespace '$NAMESPACE' exists${NC}"
-else
-    echo -e "${RED}✗ Namespace '$NAMESPACE' does not exist${NC}"
-    echo "Please deploy workloads first using: ./deploy-offline-workloads.sh"
-    exit 1
-fi
-echo ""
-
-# Step 2: Check if CronJobs exist
-echo -e "${BLUE}Step 2: Checking if CronJobs exist...${NC}"
-declare -a EXPECTED_CRONJOBS=("simple-cpu-workload" "simple-memory-workload" "file-io-workload" "network-workload" "combined-workload")
-CRONJOBS_FOUND=0
-CRONJOBS_MISSING=0
-
-for cronjob in "${EXPECTED_CRONJOBS[@]}"; do
-    if oc get cronjob "$cronjob" -n "$NAMESPACE" &> /dev/null; then
-        echo -e "${GREEN}  ✓ CronJob '$cronjob' exists${NC}"
-        CRONJOBS_FOUND=$((CRONJOBS_FOUND + 1))
-    else
-        echo -e "${YELLOW}  ✗ CronJob '$cronjob' not found${NC}"
-        CRONJOBS_MISSING=$((CRONJOBS_MISSING + 1))
-    fi
-done
-
-echo ""
-if [ $CRONJOBS_MISSING -gt 0 ]; then
-    echo -e "${YELLOW}Warning: $CRONJOBS_MISSING CronJob(s) missing. Some metrics may not be available.${NC}"
-fi
-echo ""
-
-# Step 3: Check if Jobs/Pods exist
-echo -e "${BLUE}Step 3: Checking if Jobs and Pods exist...${NC}"
-JOBS_COUNT=$(oc get jobs -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-PODS_COUNT=$(oc get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-
-if [ "$JOBS_COUNT" -gt 0 ]; then
-    echo -e "${GREEN}  ✓ Found $JOBS_COUNT job(s)${NC}"
-else
-    echo -e "${YELLOW}  ⚠ No jobs found. Workloads may not have been triggered yet.${NC}"
-fi
-
-if [ "$PODS_COUNT" -gt 0 ]; then
-    echo -e "${GREEN}  ✓ Found $PODS_COUNT pod(s)${NC}"
-    echo ""
-    echo "  Pod status:"
-    oc get pods -n "$NAMESPACE" --no-headers | awk '{print "    " $1 " - " $3}' | head -5
-else
-    echo -e "${YELLOW}  ⚠ No pods found. Workloads may not be running.${NC}"
-fi
-echo ""
-
-# Step 4: Query Thanos
-echo -e "${BLUE}Step 4: Querying Thanos for metrics...${NC}"
+# Step 1: Query Thanos
+echo -e "${BLUE}Step 1: Querying Thanos for metrics...${NC}"
 echo ""
 
 # Get Thanos endpoint
@@ -415,18 +436,43 @@ echo ""
 # Test if the acm_rs metrics exist
 echo "Checking if acm_rs metrics are available..."
 test_metric_response=$(curl -s -k --connect-timeout 10 --max-time 30 -G \
-    --data-urlencode "query=acm_rs:namespace:cpu_usage{namespace=\"${NAMESPACE}\"}" \
+    --data-urlencode "query=acm_rs:namespace:cpu_usage" \
     -H "Authorization: Bearer $(oc whoami -t)" \
     "${THANOS_ENDPOINT}/api/v1/query" 2>&1)
 
 if echo "$test_metric_response" | grep -q '"status":"success"'; then
     # Check if we got actual data
-    if echo "$test_metric_response" | grep -q '"result":\[\]'; then
-        echo -e "${YELLOW}Warning: Metrics query succeeded but no data found for namespace '${NAMESPACE}'${NC}"
+    if command -v jq &> /dev/null; then
+        result_count=$(echo "$test_metric_response" | jq -r '.data.result | length' 2>/dev/null || echo "0")
+        if [ "$result_count" -eq 0 ] || [ "$result_count" == "null" ]; then
+            echo -e "${YELLOW}Warning: Metrics query succeeded but no data found${NC}"
+            echo "Query: acm_rs:namespace:cpu_usage"
+            echo "This could mean:"
+            echo "  1. Metrics haven't been generated yet"
+            echo "  2. Metrics collection hasn't started yet"
+            echo "  3. The metric name might be different"
+            echo ""
+            echo "Testing VM metrics..."
+            test_vm_response=$(curl -s -k --connect-timeout 10 --max-time 30 -G \
+                --data-urlencode "query=acm_rs_vm:namespace:cpu_usage" \
+                -H "Authorization: Bearer $(oc whoami -t)" \
+                "${THANOS_ENDPOINT}/api/v1/query" 2>&1)
+            if echo "$test_vm_response" | grep -q '"status":"success"'; then
+                vm_result_count=$(echo "$test_vm_response" | jq -r '.data.result | length' 2>/dev/null || echo "0")
+                if [ "$vm_result_count" -gt 0 ] && [ "$vm_result_count" != "null" ]; then
+                    echo -e "${GREEN}VM metrics are available! Found $vm_result_count result(s)${NC}"
+                fi
+            fi
+            echo ""
+            echo "The script will continue but may show 'N/A' for all metrics."
+        else
+            echo -e "${GREEN}Metrics are available! Found $result_count result(s)${NC}"
+        fi
+    elif echo "$test_metric_response" | grep -q '"result":\[\]'; then
+        echo -e "${YELLOW}Warning: Metrics query succeeded but no data found${NC}"
         echo "This could mean:"
-        echo "  1. Workloads haven't been running long enough to generate metrics"
-        echo "  2. The namespace name is incorrect"
-        echo "  3. Metrics collection hasn't started yet"
+        echo "  1. Metrics haven't been generated yet"
+        echo "  2. Metrics collection hasn't started yet"
         echo ""
         echo "The script will continue but may show 'N/A' for all metrics."
     else
@@ -434,42 +480,59 @@ if echo "$test_metric_response" | grep -q '"status":"success"'; then
     fi
 else
     echo -e "${YELLOW}Warning: Could not verify metrics availability${NC}"
-    echo "Response: $(echo "$test_metric_response" | head -3)"
+    if command -v jq &> /dev/null && echo "$test_metric_response" | grep -q "error"; then
+        error_msg=$(echo "$test_metric_response" | jq -r '.error // .errorType // "Unknown error"' 2>/dev/null)
+        echo "Error: $error_msg"
+    else
+        echo "Response: $(echo "$test_metric_response" | head -5)"
+    fi
 fi
 echo ""
 
-# Calculate time range (last 4 hours)
+# Calculate time range (last 12 hours)
 END_TIME=$(date +%s)
-START_TIME=$((END_TIME - 14400))  # 4 hours ago (4 * 60 * 60 = 14400 seconds)
+START_TIME=$((END_TIME - 43200))  # 12 hours ago (12 * 60 * 60 = 43200 seconds)
 
 echo "Query time range:"
 echo "  Start: $(date -r $START_TIME 2>/dev/null || date -d @$START_TIME 2>/dev/null || echo "N/A")"
 echo "  End: $(date -r $END_TIME 2>/dev/null || date -d @$END_TIME 2>/dev/null || echo "N/A")"
 echo ""
 
-# Metrics to query - 6 metrics total
+# Metrics to query - 12 metrics total (6 regular + 6 VM)
 declare -a CPU_METRICS=("cpu_request" "cpu_usage" "cpu_recommendation")
 declare -a MEMORY_METRICS=("memory_request" "memory_usage" "memory_recommendation")
 
-echo "Metrics to be queried (6 total):"
-echo "  CPU Metrics (3):"
+echo "Metrics to be queried (12 total):"
+echo "  Regular CPU Metrics (3):"
 for metric in "${CPU_METRICS[@]}"; do
     echo "    - acm_rs:namespace:${metric}"
 done
-echo "  Memory Metrics (3):"
+echo "  Regular Memory Metrics (3):"
 for metric in "${MEMORY_METRICS[@]}"; do
     echo "    - acm_rs:namespace:${metric}"
+done
+echo "  VM CPU Metrics (3):"
+for metric in "${CPU_METRICS[@]}"; do
+    echo "    - acm_rs_vm:namespace:${metric}"
+done
+echo "  VM Memory Metrics (3):"
+for metric in "${MEMORY_METRICS[@]}"; do
+    echo "    - acm_rs_vm:namespace:${metric}"
 done
 echo ""
 
 echo "=========================================="
-echo "CPU Metrics for namespace: $NAMESPACE"
+echo "CPU Metrics"
 echo "=========================================="
 echo ""
 
 for metric in "${CPU_METRICS[@]}"; do
     echo -e "${BLUE}Metric: acm_rs:namespace:${metric}${NC}"
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT" 2>&1)
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:" 2>&1)
+    # Debug: show raw value if it's an error
+    if echo "$value" | grep -q "Error\|error"; then
+        echo -e "  ${YELLOW}Debug: $value${NC}"
+    fi
     if [ "$value" != "N/A" ] && [ -n "$value" ] && ! echo "$value" | grep -q "error\|Error\|timeout"; then
         formatted_value=$(format_cpu "$value")
         echo -e "  ${GREEN}✓${NC} Current value: ${GREEN}$formatted_value${NC}"
@@ -477,20 +540,24 @@ for metric in "${CPU_METRICS[@]}"; do
         if echo "$value" | grep -q "error\|Error\|timeout"; then
             echo -e "  ${RED}✗${NC} Error: $(echo "$value" | head -1)${NC}"
         else
-            echo -e "  ${RED}✗${NC} Current value: ${RED}N/A (metric not found)${NC}"
+            echo -e "  ${YELLOW}⚠${NC} Current value: ${YELLOW}N/A${NC} (no data found - metric may not exist or have no values)"
         fi
     fi
     echo ""
 done
 
 echo "=========================================="
-echo "Memory Metrics for namespace: $NAMESPACE"
+echo "Memory Metrics"
 echo "=========================================="
 echo ""
 
 for metric in "${MEMORY_METRICS[@]}"; do
     echo -e "${BLUE}Metric: acm_rs:namespace:${metric}${NC}"
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT" 2>&1)
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:" 2>&1)
+    # Debug: show raw value if it's an error
+    if echo "$value" | grep -q "Error\|error"; then
+        echo -e "  ${YELLOW}Debug: $value${NC}"
+    fi
     if [ "$value" != "N/A" ] && [ -n "$value" ] && ! echo "$value" | grep -q "error\|Error\|timeout"; then
         formatted_value=$(format_bytes "$value")
         echo -e "  ${GREEN}✓${NC} Current value: ${GREEN}$formatted_value${NC}"
@@ -498,26 +565,76 @@ for metric in "${MEMORY_METRICS[@]}"; do
         if echo "$value" | grep -q "error\|Error\|timeout"; then
             echo -e "  ${RED}✗${NC} Error: $(echo "$value" | head -1)${NC}"
         else
-            echo -e "  ${RED}✗${NC} Current value: ${RED}N/A (metric not found)${NC}"
+            echo -e "  ${YELLOW}⚠${NC} Current value: ${YELLOW}N/A${NC} (no data found - metric may not exist or have no values)"
         fi
     fi
     echo ""
 done
 
-# Step 5: Get time series data for last 4 hours
 echo "=========================================="
-echo "Time Series Data (Last 4 Hours)"
+echo "VM CPU Metrics"
+echo "=========================================="
+echo ""
+
+for metric in "${CPU_METRICS[@]}"; do
+    echo -e "${BLUE}Metric: acm_rs_vm:namespace:${metric}${NC}"
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:" 2>&1)
+    # Debug: show raw value if it's an error
+    if echo "$value" | grep -q "Error\|error"; then
+        echo -e "  ${YELLOW}Debug: $value${NC}"
+    fi
+    if [ "$value" != "N/A" ] && [ -n "$value" ] && ! echo "$value" | grep -q "error\|Error\|timeout"; then
+        formatted_value=$(format_cpu "$value")
+        echo -e "  ${GREEN}✓${NC} Current value: ${GREEN}$formatted_value${NC}"
+    else
+        if echo "$value" | grep -q "error\|Error\|timeout"; then
+            echo -e "  ${RED}✗${NC} Error: $(echo "$value" | head -1)${NC}"
+        else
+            echo -e "  ${YELLOW}⚠${NC} Current value: ${YELLOW}N/A${NC} (no data found - metric may not exist or have no values)"
+        fi
+    fi
+    echo ""
+done
+
+echo "=========================================="
+echo "VM Memory Metrics"
+echo "=========================================="
+echo ""
+
+for metric in "${MEMORY_METRICS[@]}"; do
+    echo -e "${BLUE}Metric: acm_rs_vm:namespace:${metric}${NC}"
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:" 2>&1)
+    # Debug: show raw value if it's an error
+    if echo "$value" | grep -q "Error\|error"; then
+        echo -e "  ${YELLOW}Debug: $value${NC}"
+    fi
+    if [ "$value" != "N/A" ] && [ -n "$value" ] && ! echo "$value" | grep -q "error\|Error\|timeout"; then
+        formatted_value=$(format_bytes "$value")
+        echo -e "  ${GREEN}✓${NC} Current value: ${GREEN}$formatted_value${NC}"
+    else
+        if echo "$value" | grep -q "error\|Error\|timeout"; then
+            echo -e "  ${RED}✗${NC} Error: $(echo "$value" | head -1)${NC}"
+        else
+            echo -e "  ${YELLOW}⚠${NC} Current value: ${YELLOW}N/A${NC} (no data found - metric may not exist or have no values)"
+        fi
+    fi
+    echo ""
+done
+
+# Step 2: Get time series data for last 12 hours
+echo "=========================================="
+echo "Time Series Data (Last 12 Hours)"
 echo "=========================================="
 echo ""
 
 # Function to display time series for a metric
 display_time_series() {
     local metric=$1
-    local namespace=$2
-    local endpoint=$3
-    local start_time=$4
-    local end_time=$5
-    local metric_type=$6  # "cpu" or "memory"
+    local endpoint=$2
+    local start_time=$3
+    local end_time=$4
+    local metric_type=$5  # "cpu" or "memory"
+    local prefix=${6:-"acm_rs:namespace:"}  # Default to acm_rs:namespace:, can be overridden
     
     # Capitalize first letter (bash 3.2 compatible)
     if [ "$metric_type" = "cpu" ]; then
@@ -526,8 +643,14 @@ display_time_series() {
         local capitalized_type="Memory"
     fi
     
-    echo -e "${BLUE}${capitalized_type} ${metric} Over Time:${NC}"
-    local data=$(query_time_series "$metric" "$namespace" "$endpoint" "$start_time" "$end_time")
+    # Determine if this is a VM metric
+    local metric_label=""
+    if [[ "$prefix" == "acm_rs_vm:namespace:" ]]; then
+        metric_label="VM "
+    fi
+    
+    echo -e "${BLUE}${metric_label}${capitalized_type} ${metric} Over Time:${NC}"
+    local data=$(query_time_series "$metric" "$endpoint" "$start_time" "$end_time" "$prefix")
     if [ -n "$data" ] && command -v jq &> /dev/null; then
         local count=$(echo "$data" | jq -r '.data.result[0].values | length' 2>/dev/null || echo "0")
         if [ "$count" -gt 0 ]; then
@@ -547,34 +670,52 @@ display_time_series() {
 
 # Display time series for CPU metrics
 for metric in "${CPU_METRICS[@]}"; do
-    display_time_series "$metric" "$NAMESPACE" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "CPU"
+    display_time_series "$metric" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "cpu" "acm_rs:namespace:"
 done
 
 # Display time series for Memory metrics
 for metric in "${MEMORY_METRICS[@]}"; do
-    display_time_series "$metric" "$NAMESPACE" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "Memory"
+    display_time_series "$metric" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "memory" "acm_rs:namespace:"
 done
 
-# Step 6: Comprehensive Summary Table
+# Display time series for VM CPU metrics
+for metric in "${CPU_METRICS[@]}"; do
+    display_time_series "$metric" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "cpu" "acm_rs_vm:namespace:"
+done
+
+# Display time series for VM Memory metrics
+for metric in "${MEMORY_METRICS[@]}"; do
+    display_time_series "$metric" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "memory" "acm_rs_vm:namespace:"
+done
+
+# Step 3: Comprehensive Summary Table
 echo "=========================================="
 echo "All Metrics Summary"
 echo "=========================================="
 echo ""
-echo "All 6 metrics queried:"
-echo "  CPU Metrics:"
+echo "All 12 metrics queried:"
+echo "  Regular CPU Metrics:"
 for metric in "${CPU_METRICS[@]}"; do
     echo "    - acm_rs:namespace:${metric}"
 done
-echo "  Memory Metrics:"
+echo "  Regular Memory Metrics:"
 for metric in "${MEMORY_METRICS[@]}"; do
     echo "    - acm_rs:namespace:${metric}"
 done
+echo "  VM CPU Metrics:"
+for metric in "${CPU_METRICS[@]}"; do
+    echo "    - acm_rs_vm:namespace:${metric}"
+done
+echo "  VM Memory Metrics:"
+for metric in "${MEMORY_METRICS[@]}"; do
+    echo "    - acm_rs_vm:namespace:${metric}"
+done
 echo ""
 
-printf "%-45s %-30s %-20s %-10s\n" "Metric" "Current Value (Formatted)" "Raw Value" "Status"
-echo "------------------------------------------------------------------------------------------------------------------------"
+printf "%-50s %-30s %-20s %-10s\n" "Metric" "Current Value (Formatted)" "Raw Value" "Status"
+echo "----------------------------------------------------------------------------------------------------------------------------"
 for metric in "${CPU_METRICS[@]}"; do
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT")
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:")
     formatted_value=$(format_cpu "$value")
     if [ "$value" != "N/A" ] && [ -n "$value" ]; then
         status="${GREEN}✓${NC}"
@@ -583,10 +724,10 @@ for metric in "${CPU_METRICS[@]}"; do
         status="${RED}✗${NC}"
         raw_value="N/A"
     fi
-    printf "%-45s %-30s %-20s %-10s\n" "acm_rs:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
+    printf "%-50s %-30s %-20s %-10s\n" "acm_rs:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
 done
 for metric in "${MEMORY_METRICS[@]}"; do
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT")
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:")
     formatted_value=$(format_bytes "$value")
     if [ "$value" != "N/A" ] && [ -n "$value" ]; then
         status="${GREEN}✓${NC}"
@@ -595,19 +736,43 @@ for metric in "${MEMORY_METRICS[@]}"; do
         status="${RED}✗${NC}"
         raw_value="N/A"
     fi
-    printf "%-45s %-30s %-20s %-10s\n" "acm_rs:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
+    printf "%-50s %-30s %-20s %-10s\n" "acm_rs:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
+done
+for metric in "${CPU_METRICS[@]}"; do
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:")
+    formatted_value=$(format_cpu "$value")
+    if [ "$value" != "N/A" ] && [ -n "$value" ]; then
+        status="${GREEN}✓${NC}"
+        raw_value="$value"
+    else
+        status="${RED}✗${NC}"
+        raw_value="N/A"
+    fi
+    printf "%-50s %-30s %-20s %-10s\n" "acm_rs_vm:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
+done
+for metric in "${MEMORY_METRICS[@]}"; do
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:")
+    formatted_value=$(format_bytes "$value")
+    if [ "$value" != "N/A" ] && [ -n "$value" ]; then
+        status="${GREEN}✓${NC}"
+        raw_value="$value"
+    else
+        status="${RED}✗${NC}"
+        raw_value="N/A"
+    fi
+    printf "%-50s %-30s %-20s %-10s\n" "acm_rs_vm:namespace:${metric}" "$formatted_value" "$raw_value" "$status"
 done
 echo ""
 
-# Step 7: Detailed Values Table
+# Step 4: Detailed Values Table
 echo "=========================================="
 echo "Detailed Metric Values"
 echo "=========================================="
 echo ""
-echo "CPU Metrics:"
-echo "------------"
+echo "Regular CPU Metrics:"
+echo "--------------------"
 for metric in "${CPU_METRICS[@]}"; do
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT")
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:")
     formatted_value=$(format_cpu "$value")
     echo "  acm_rs:namespace:${metric}:"
     echo "    Formatted: $formatted_value"
@@ -615,12 +780,34 @@ for metric in "${CPU_METRICS[@]}"; do
     echo ""
 done
 
-echo "Memory Metrics:"
-echo "---------------"
+echo "Regular Memory Metrics:"
+echo "-----------------------"
 for metric in "${MEMORY_METRICS[@]}"; do
-    value=$(get_current_metric "$metric" "$NAMESPACE" "$THANOS_ENDPOINT")
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs:namespace:")
     formatted_value=$(format_bytes "$value")
     echo "  acm_rs:namespace:${metric}:"
+    echo "    Formatted: $formatted_value"
+    echo "    Raw: $value"
+    echo ""
+done
+
+echo "VM CPU Metrics:"
+echo "---------------"
+for metric in "${CPU_METRICS[@]}"; do
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:")
+    formatted_value=$(format_cpu "$value")
+    echo "  acm_rs_vm:namespace:${metric}:"
+    echo "    Formatted: $formatted_value"
+    echo "    Raw: $value"
+    echo ""
+done
+
+echo "VM Memory Metrics:"
+echo "------------------"
+for metric in "${MEMORY_METRICS[@]}"; do
+    value=$(get_current_metric "$metric" "$THANOS_ENDPOINT" "acm_rs_vm:namespace:")
+    formatted_value=$(format_bytes "$value")
+    echo "  acm_rs_vm:namespace:${metric}:"
     echo "    Formatted: $formatted_value"
     echo "    Raw: $value"
     echo ""
@@ -630,10 +817,13 @@ echo ""
 echo -e "${GREEN}Check complete!${NC}"
 echo ""
 echo "To view raw metric data, you can query Thanos directly:"
+echo "  # Query Frontend (preferred - port 9090):"
+echo "  oc port-forward -n open-cluster-management-observability svc/observability-thanos-query-frontend 9090:9090"
+echo "  # Or Querier (fallback - port 9091):"
 echo "  oc port-forward -n openshift-monitoring svc/thanos-querier 9091:9091"
-echo "  Then visit: http://localhost:9091"
+echo "  Then visit: http://localhost:9090 (or http://localhost:9091)"
 echo ""
 echo "To query specific metrics manually:"
-echo "  curl -k -G --data-urlencode 'query=acm_rs:namespace:cpu_usage{namespace=\"$NAMESPACE\"}' \\"
+echo "  curl -k -G --data-urlencode 'query=acm_rs:namespace:cpu_usage' \\"
 echo "    -H \"Authorization: Bearer \$(oc whoami -t)\" \\"
 echo "    \"$THANOS_ENDPOINT/api/v1/query\""

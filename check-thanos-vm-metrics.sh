@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Script to check existing workloads and query Thanos for VM metrics
-# Assumes workloads are already deployed and triggered
+# Script to query Thanos for VM metrics from spoke clusters (hub cluster)
+# These metrics are aggregated from spoke clusters to the hub cluster
 #
-# Queries 6 metrics for the namespace:
+# Queries 6 metrics from thanos-querier:
 # CPU Metrics:
 #   - acm_rs_vm:namespace:cpu_request
 #   - acm_rs_vm:namespace:cpu_usage
@@ -15,11 +15,15 @@
 #
 # Time Range: Last 4 hours (14400 seconds)
 # Query Interval: 5 minutes (300 seconds)
+#
+# Usage: ./check-thanos-vm-metrics.sh [namespace]
+#   If namespace is provided, metrics will be filtered by that namespace
+#   If namespace is not provided, all metrics across all namespaces will be queried
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="offline-workload"
+NAMESPACE="${1:-}"  # Optional namespace parameter
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,11 +35,16 @@ NC='\033[0m' # No Color
 echo "=========================================="
 echo "Thanos VM Metrics Check Script"
 echo "=========================================="
-echo "Namespace: $NAMESPACE"
+echo "Querying hub cluster thanos-querier for spoke cluster metrics"
+if [ -n "$NAMESPACE" ]; then
+    echo "Namespace filter: $NAMESPACE"
+else
+    echo "Namespace filter: None (querying all namespaces)"
+fi
 echo "Time Range: Last 4 hours"
 echo ""
-echo "Note: This script queries metrics that may take time to appear."
-echo "If metrics show 'N/A', workloads may need more time to generate data."
+echo "Note: This script queries metrics from spoke clusters aggregated in the hub."
+echo "If metrics show 'N/A', metrics may not be available yet or namespace filter may be incorrect."
 echo ""
 
 # Check if oc is installed
@@ -118,7 +127,12 @@ get_current_metric() {
     local namespace=$2
     local endpoint=$3
     
-    local query="acm_rs_vm:namespace:${metric}{namespace=\"${namespace}\"}"
+    # Build query with optional namespace filter
+    if [ -n "$namespace" ]; then
+        local query="acm_rs_vm:namespace:${metric}{namespace=\"${namespace}\"}"
+    else
+        local query="acm_rs_vm:namespace:${metric}"
+    fi
     local token=$(oc whoami -t 2>/dev/null)
     
     if [ -z "$token" ]; then
@@ -128,18 +142,31 @@ get_current_metric() {
     
     # Add timeout and connection timeout to prevent hanging
     # Use -k to ignore SSL certificate errors for HTTPS
-    # Use --max-time instead of timeout command (more portable)
-    # Use --fail to fail on HTTP errors
-    local response=$(curl -s -k --connect-timeout 10 --max-time 30 --fail -G \
-        --data-urlencode "query=${query}" \
-        -H "Authorization: Bearer ${token}" \
-        "${endpoint}/api/v1/query" 2>&1)
-    
-    local curl_exit=$?
+    # Use shorter timeout (15 seconds) to fail fast
+    # Don't use --fail to ensure we always get the response body
+    # Use timeout command if available, otherwise rely on curl's --max-time
+    if command -v timeout &> /dev/null; then
+        local response=$(timeout 15 curl -s -k --connect-timeout 5 --max-time 15 -G \
+            --data-urlencode "query=${query}" \
+            -H "Authorization: Bearer ${token}" \
+            "${endpoint}/api/v1/query" 2>&1)
+        local curl_exit=$?
+        # timeout command returns 124 on timeout
+        if [ $curl_exit -eq 124 ]; then
+            echo "Error: Request timed out after 15 seconds"
+            return 1
+        fi
+    else
+        local response=$(curl -s -k --connect-timeout 5 --max-time 15 -G \
+            --data-urlencode "query=${query}" \
+            -H "Authorization: Bearer ${token}" \
+            "${endpoint}/api/v1/query" 2>&1)
+        local curl_exit=$?
+    fi
     
     # Check for timeout or connection errors
     if [ $curl_exit -ne 0 ] || echo "$response" | grep -q "timed out\|timeout\|Operation timed out"; then
-        echo "Error: Request timed out after 30 seconds"
+        echo "Error: Request timed out after 15 seconds"
         return 1
     fi
     
@@ -148,11 +175,23 @@ get_current_metric() {
         # If endpoint was HTTP, try HTTPS instead
         if [[ "$endpoint" == http://* ]]; then
             endpoint="${endpoint/http:/https:}"
-            response=$(curl -s -k --connect-timeout 10 --max-time 30 --fail -G \
-                --data-urlencode "query=${query}" \
-                -H "Authorization: Bearer ${token}" \
-                "${endpoint}/api/v1/query" 2>&1)
-            curl_exit=$?
+            if command -v timeout &> /dev/null; then
+                response=$(timeout 15 curl -s -k --connect-timeout 5 --max-time 15 -G \
+                    --data-urlencode "query=${query}" \
+                    -H "Authorization: Bearer ${token}" \
+                    "${endpoint}/api/v1/query" 2>&1)
+                curl_exit=$?
+                if [ $curl_exit -eq 124 ]; then
+                    echo "Error: Request timed out after 15 seconds"
+                    return 1
+                fi
+            else
+                response=$(curl -s -k --connect-timeout 5 --max-time 15 -G \
+                    --data-urlencode "query=${query}" \
+                    -H "Authorization: Bearer ${token}" \
+                    "${endpoint}/api/v1/query" 2>&1)
+                curl_exit=$?
+            fi
         fi
     fi
     
@@ -164,17 +203,26 @@ get_current_metric() {
         fi
     fi
     
-    # Filter out error messages from stderr
-    local error_msg=$(echo "$response" | grep -i "error\|Client sent\|SSL\|certificate" || true)
-    if [ -n "$error_msg" ] && [ -z "$(echo "$response" | grep -o '{"status"')" ]; then
-        # Response contains error, not JSON
-        echo "Error: $(echo "$error_msg" | head -1)"
+    # Check if response is valid JSON
+    if ! echo "$response" | grep -q '{"status"'; then
+        # Response is not valid JSON, might be an error message
+        local error_msg=$(echo "$response" | grep -i "error\|Client sent\|SSL\|certificate" | head -1 || echo "Unknown error")
+        echo "Error: $error_msg"
         return 1
     fi
     
-    if [ $curl_exit -eq 0 ] && [ -n "$response" ]; then
+    # Check if query was successful
+    if echo "$response" | grep -q '"status":"success"'; then
+        # Check if we have any results
+        if echo "$response" | grep -q '"result":\[\]'; then
+            # Empty result set
+            echo "N/A"
+            return 1
+        fi
+        
         # Extract value using jq if available
         if command -v jq &> /dev/null; then
+            # Get the first result's value
             local value=$(echo "$response" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null)
             if [ -n "$value" ] && [ "$value" != "null" ] && [ "$value" != "empty" ]; then
                 echo "$value"
@@ -189,6 +237,7 @@ get_current_metric() {
             fi
         fi
     fi
+    
     echo "N/A"
     return 1
 }
@@ -201,7 +250,12 @@ query_time_series() {
     local start_time=$4
     local end_time=$5
     
-    local query="acm_rs_vm:namespace:${metric}{namespace=\"${namespace}\"}"
+    # Build query with optional namespace filter
+    if [ -n "$namespace" ]; then
+        local query="acm_rs_vm:namespace:${metric}{namespace=\"${namespace}\"}"
+    else
+        local query="acm_rs_vm:namespace:${metric}"
+    fi
     local token=$(oc whoami -t)
     
     # Add timeout and connection timeout to prevent hanging
@@ -296,62 +350,30 @@ format_cpu() {
     fi
 }
 
-# Step 1: Check if namespace exists
-echo -e "${BLUE}Step 1: Checking if namespace exists...${NC}"
-if oc get namespace "$NAMESPACE" &> /dev/null; then
-    echo -e "${GREEN}✓ Namespace '$NAMESPACE' exists${NC}"
-else
-    echo -e "${RED}✗ Namespace '$NAMESPACE' does not exist${NC}"
-    echo "Please deploy workloads first using: ./deploy-offline-workloads.sh"
-    exit 1
-fi
-echo ""
-
-# Step 2: Check if CronJobs exist
-echo -e "${BLUE}Step 2: Checking if CronJobs exist...${NC}"
-declare -a EXPECTED_CRONJOBS=("simple-cpu-workload" "simple-memory-workload" "file-io-workload" "network-workload" "combined-workload")
-CRONJOBS_FOUND=0
-CRONJOBS_MISSING=0
-
-for cronjob in "${EXPECTED_CRONJOBS[@]}"; do
-    if oc get cronjob "$cronjob" -n "$NAMESPACE" &> /dev/null; then
-        echo -e "${GREEN}  ✓ CronJob '$cronjob' exists${NC}"
-        CRONJOBS_FOUND=$((CRONJOBS_FOUND + 1))
+# Step 1: Check namespace if provided (optional)
+if [ -n "$NAMESPACE" ]; then
+    echo -e "${BLUE}Step 1: Checking if namespace exists...${NC}"
+    if oc get namespace "$NAMESPACE" &> /dev/null; then
+        echo -e "${GREEN}✓ Namespace '$NAMESPACE' exists${NC}"
     else
-        echo -e "${YELLOW}  ✗ CronJob '$cronjob' not found${NC}"
-        CRONJOBS_MISSING=$((CRONJOBS_MISSING + 1))
+        echo -e "${YELLOW}⚠ Namespace '$NAMESPACE' does not exist in hub cluster${NC}"
+        echo "Note: Metrics may still be available from spoke clusters even if namespace doesn't exist in hub."
+        echo "Continuing with query..."
     fi
-done
-
-echo ""
-if [ $CRONJOBS_MISSING -gt 0 ]; then
-    echo -e "${YELLOW}Warning: $CRONJOBS_MISSING CronJob(s) missing. Some metrics may not be available.${NC}"
-fi
-echo ""
-
-# Step 3: Check if Jobs/Pods exist
-echo -e "${BLUE}Step 3: Checking if Jobs and Pods exist...${NC}"
-JOBS_COUNT=$(oc get jobs -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-PODS_COUNT=$(oc get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-
-if [ "$JOBS_COUNT" -gt 0 ]; then
-    echo -e "${GREEN}  ✓ Found $JOBS_COUNT job(s)${NC}"
-else
-    echo -e "${YELLOW}  ⚠ No jobs found. Workloads may not have been triggered yet.${NC}"
-fi
-
-if [ "$PODS_COUNT" -gt 0 ]; then
-    echo -e "${GREEN}  ✓ Found $PODS_COUNT pod(s)${NC}"
     echo ""
-    echo "  Pod status:"
-    oc get pods -n "$NAMESPACE" --no-headers | awk '{print "    " $1 " - " $3}' | head -5
 else
-    echo -e "${YELLOW}  ⚠ No pods found. Workloads may not be running.${NC}"
+    echo -e "${BLUE}Step 1: Querying all namespaces (no filter)${NC}"
+    echo ""
 fi
+
+# Step 2: Skip local resource checks (metrics come from spoke clusters)
+echo -e "${BLUE}Step 2: Querying hub cluster thanos-querier${NC}"
+echo "Note: Metrics are aggregated from spoke clusters to the hub cluster."
+echo "Local resource checks are skipped as metrics come from remote clusters."
 echo ""
 
-# Step 4: Query Thanos
-echo -e "${BLUE}Step 4: Querying Thanos for VM metrics...${NC}"
+# Step 3: Query Thanos
+echo -e "${BLUE}Step 3: Querying Thanos for VM metrics from spoke clusters...${NC}"
 echo ""
 
 # Get Thanos endpoint
@@ -414,19 +436,30 @@ echo ""
 
 # Test if the acm_rs_vm metrics exist
 echo "Checking if acm_rs_vm metrics are available..."
+if [ -n "$NAMESPACE" ]; then
+    test_query="acm_rs_vm:namespace:cpu_usage{namespace=\"${NAMESPACE}\"}"
+else
+    test_query="acm_rs_vm:namespace:cpu_usage"
+fi
 test_metric_response=$(curl -s -k --connect-timeout 10 --max-time 30 -G \
-    --data-urlencode "query=acm_rs_vm:namespace:cpu_usage{namespace=\"${NAMESPACE}\"}" \
+    --data-urlencode "query=${test_query}" \
     -H "Authorization: Bearer $(oc whoami -t)" \
     "${THANOS_ENDPOINT}/api/v1/query" 2>&1)
 
 if echo "$test_metric_response" | grep -q '"status":"success"'; then
     # Check if we got actual data
     if echo "$test_metric_response" | grep -q '"result":\[\]'; then
-        echo -e "${YELLOW}Warning: Metrics query succeeded but no data found for namespace '${NAMESPACE}'${NC}"
+        if [ -n "$NAMESPACE" ]; then
+            echo -e "${YELLOW}Warning: Metrics query succeeded but no data found for namespace '${NAMESPACE}'${NC}"
+        else
+            echo -e "${YELLOW}Warning: Metrics query succeeded but no data found${NC}"
+        fi
         echo "This could mean:"
-        echo "  1. Workloads haven't been running long enough to generate metrics"
-        echo "  2. The namespace name is incorrect"
-        echo "  3. Metrics collection hasn't started yet"
+        echo "  1. Metrics haven't been collected from spoke clusters yet"
+        if [ -n "$NAMESPACE" ]; then
+            echo "  2. The namespace filter may not match any spoke cluster namespaces"
+        fi
+        echo "  3. Metrics collection from spoke clusters hasn't started yet"
         echo ""
         echo "The script will continue but may show 'N/A' for all metrics."
     else
@@ -463,7 +496,11 @@ done
 echo ""
 
 echo "=========================================="
-echo "CPU Metrics for namespace: $NAMESPACE"
+if [ -n "$NAMESPACE" ]; then
+    echo "CPU Metrics for namespace: $NAMESPACE"
+else
+    echo "CPU Metrics (all namespaces)"
+fi
 echo "=========================================="
 echo ""
 
@@ -484,7 +521,11 @@ for metric in "${CPU_METRICS[@]}"; do
 done
 
 echo "=========================================="
-echo "Memory Metrics for namespace: $NAMESPACE"
+if [ -n "$NAMESPACE" ]; then
+    echo "Memory Metrics for namespace: $NAMESPACE"
+else
+    echo "Memory Metrics (all namespaces)"
+fi
 echo "=========================================="
 echo ""
 
@@ -504,7 +545,7 @@ for metric in "${MEMORY_METRICS[@]}"; do
     echo ""
 done
 
-# Step 5: Get time series data for last 4 hours
+# Step 4: Get time series data for last 4 hours
 echo "=========================================="
 echo "Time Series Data (Last 4 Hours)"
 echo "=========================================="
@@ -555,7 +596,7 @@ for metric in "${MEMORY_METRICS[@]}"; do
     display_time_series "$metric" "$NAMESPACE" "$THANOS_ENDPOINT" "$START_TIME" "$END_TIME" "Memory"
 done
 
-# Step 6: Comprehensive Summary Table
+# Step 5: Comprehensive Summary Table
 echo "=========================================="
 echo "All Metrics Summary"
 echo "=========================================="
@@ -599,7 +640,7 @@ for metric in "${MEMORY_METRICS[@]}"; do
 done
 echo ""
 
-# Step 7: Detailed Values Table
+# Step 6: Detailed Values Table
 echo "=========================================="
 echo "Detailed Metric Values"
 echo "=========================================="
@@ -634,6 +675,10 @@ echo "  oc port-forward -n openshift-monitoring svc/thanos-querier 9091:9091"
 echo "  Then visit: http://localhost:9091"
 echo ""
 echo "To query specific metrics manually:"
-echo "  curl -k -G --data-urlencode 'query=acm_rs_vm:namespace:cpu_usage{namespace=\"$NAMESPACE\"}' \\"
+if [ -n "$NAMESPACE" ]; then
+    echo "  curl -k -G --data-urlencode 'query=acm_rs_vm:namespace:cpu_usage{namespace=\"$NAMESPACE\"}' \\"
+else
+    echo "  curl -k -G --data-urlencode 'query=acm_rs_vm:namespace:cpu_usage' \\"
+fi
 echo "    -H \"Authorization: Bearer \$(oc whoami -t)\" \\"
 echo "    \"$THANOS_ENDPOINT/api/v1/query\""
